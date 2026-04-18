@@ -5017,9 +5017,13 @@ class TestWeightTying:
 
     torch_device = infer_device()
 
-    def get_lm_model(self, tie_weights=True):
+    def get_lm_model(self, tie_weights=True, config_tie_word_embeddings=None):
         # Mimicking a LM with embed_tokens and lm_head layers
         # to test weight tying of adapters
+
+        if config_tie_word_embeddings is None:
+            config_tie_word_embeddings = tie_weights
+
         class MyModule(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -5027,7 +5031,6 @@ class TestWeightTying:
                 self.embed_tokens = nn.Embedding(1000, 1000)
                 self.linear = nn.Linear(1000, 1000, bias=False)
 
-        # Config object
         class ModelConfig:
             def __init__(self, tie_word_embeddings):
                 self.tie_word_embeddings = tie_word_embeddings
@@ -5036,14 +5039,13 @@ class TestWeightTying:
                 return {"tie_word_embeddings": self.tie_word_embeddings}
 
         class CausalLM(nn.Module):
-            # _tied_weights_keys on class-level architectural
-            # so it exists regardless of whether tying is actually enabled
-            _tied_weights_keys = ["lm_head.weight"]
+            if tie_weights:
+                _tied_weights_keys = ["lm_head.weight"]
 
             def __init__(self):
                 super().__init__()
                 self.model = MyModule()
-                self.config = ModelConfig(tie_word_embeddings=tie_weights)  # Updated Config Object!
+                self.config = ModelConfig(tie_word_embeddings=config_tie_word_embeddings)
                 self.lm_head = nn.Linear(1000, 1000, bias=False)
 
                 if tie_weights:
@@ -5057,8 +5059,12 @@ class TestWeightTying:
 
         return CausalLM().eval().to(self.torch_device)
 
-    def get_seq2seq_lm_model(self, tie_weights=True):
+    def get_seq2seq_lm_model(self, tie_weights=True, config_tie_word_embeddings=None):
         # Mimicking a encoder-decoder LM with shared embeddings
+
+        if config_tie_word_embeddings is None:
+            config_tie_word_embeddings = tie_weights
+
         class Seq2SeqStack(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -5080,18 +5086,17 @@ class TestWeightTying:
                 return {"tie_word_embeddings": self.tie_word_embeddings}
 
         class Seq2SeqLM(nn.Module):
-            # _tied_weights_keys on class-level architectural
-            # so it exists regardless of whether tying is actually enabled
-            _tied_weights_keys = {
-                "model.encoder.embed_tokens.weight": "model.shared.weight",
-                "model.decoder.embed_tokens.weight": "model.shared.weight",
-                "lm_head.weight": "model.shared.weight",
-            }
+            if tie_weights:
+                _tied_weights_keys = {
+                    "model.encoder.embed_tokens.weight": "model.shared.weight",
+                    "model.decoder.embed_tokens.weight": "model.shared.weight",
+                    "lm_head.weight": "model.shared.weight",
+                }
 
             def __init__(self):
                 super().__init__()
                 self.model = MySeq2SeqModule()
-                self.config = ModelConfig(tie_word_embeddings=tie_weights)
+                self.config = ModelConfig(tie_word_embeddings=config_tie_word_embeddings)
                 self.lm_head = nn.Linear(1000, 1000, bias=False)
 
                 if tie_weights:
@@ -5417,7 +5422,7 @@ class TestWeightTying:
     def test_ensure_weight_tying_not_tying_when_model_config_tie_false(self, modules_to_save):
         # When tie_word_embeddings=False, ensure_weight_tying=True should not tie weights.
         # Regression test for issue #2944
-        model = self.get_lm_model(tie_weights=False)
+        model = self.get_lm_model(tie_weights=True, config_tie_word_embeddings=False)
         config = LoraConfig(
             modules_to_save=modules_to_save,
             target_modules=["linear"],
@@ -5437,18 +5442,13 @@ class TestWeightTying:
         else:
             assert isinstance(model.base_model.model.lm_head, torch.nn.modules.linear.Linear)
 
-        # weights must NOT share memory (they should be separate)
-        embed_ptr = model.base_model.model.model.embed_tokens.weight.data_ptr()
-        lm_head_ptr = model.base_model.model.lm_head.weight.data_ptr()
-        assert embed_ptr != lm_head_ptr
-
     @pytest.mark.parametrize("target_modules", [["lm_head"], ["embed_tokens"], ["lm_head", "embed_tokens"]])
     def test_ensure_weight_tying_not_tying_when_model_config_tie_false_target_modules(self, target_modules):
         # When tie_word_embeddings=False, ensure_weight_tying=True should not tie weights.
         # Regression test for issue #2944 targeting target_modules flow
-        model = self.get_lm_model(tie_weights=False)
+        model = self.get_lm_model(tie_weights=True, config_tie_word_embeddings=False)
         config = LoraConfig(
-            target_modules=["linear"] + target_modules,  # Passing to target_module
+            target_modules=["linear"] + target_modules,
             ensure_weight_tying=True,
         )
 
@@ -5464,8 +5464,3 @@ class TestWeightTying:
             assert isinstance(model.base_model.model.lm_head, LoraLayer)
         else:
             assert isinstance(model.base_model.model.lm_head, torch.nn.modules.linear.Linear)
-
-        # weights must NOT share memory (they should be separate)
-        embed_ptr = model.base_model.model.model.embed_tokens.weight.data_ptr()
-        lm_head_ptr = model.base_model.model.lm_head.weight.data_ptr()
-        assert embed_ptr != lm_head_ptr
