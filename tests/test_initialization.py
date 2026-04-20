@@ -5442,10 +5442,15 @@ class TestWeightTying:
         else:
             assert isinstance(model.base_model.model.lm_head, torch.nn.modules.linear.Linear)
 
+        assert (
+            model.base_model.model.model.embed_tokens.weight.data_ptr()
+            != model.base_model.model.lm_head.weight.data_ptr()
+        )
+
     @pytest.mark.parametrize("target_modules", [["lm_head"], ["embed_tokens"], ["lm_head", "embed_tokens"]])
     def test_ensure_weight_tying_not_tying_when_model_config_tie_false_target_modules(self, target_modules):
         # When tie_word_embeddings=False, ensure_weight_tying=True should not tie weights.
-        # Regression test for issue #2944 targeting target_modules flow
+        # Regression test for issue #2944
         model = self.get_lm_model(tie_weights=True, config_tie_word_embeddings=False)
         config = LoraConfig(
             target_modules=["linear"] + target_modules,
@@ -5464,3 +5469,12 @@ class TestWeightTying:
             assert isinstance(model.base_model.model.lm_head, LoraLayer)
         else:
             assert isinstance(model.base_model.model.lm_head, torch.nn.modules.linear.Linear)
+
+        if set(target_modules) == {"embed_tokens", "lm_head"}:
+            adapter_name = "default"
+            embed_lora_A = model.base_model.model.model.embed_tokens.lora_embedding_A[adapter_name]
+            embed_lora_B = model.base_model.model.model.embed_tokens.lora_embedding_B[adapter_name]
+            lm_lora_A = model.base_model.model.lm_head.lora_A[adapter_name].weight
+            lm_lora_B = model.base_model.model.lm_head.lora_B[adapter_name].weight
+            assert embed_lora_A.data_ptr() != lm_lora_B.data_ptr()
+            assert embed_lora_B.data_ptr() != lm_lora_A.data_ptr()
